@@ -1,0 +1,125 @@
+### Practical Machine Learning Course Project
+=============================================
+
+#### Background
+
+Using devices such as Jawbone Up, Nike FuelBand, and Fitbit it is now possible to collect a large amount of data about personal activity relatively inexpensively. As requested, the goal of this short project is to use data from accelerometers on the belt, forearm, arm, and dumbell of 6 participants, who were asked to perform barbell lifts correctly and incorrectly in 5 different ways, and **predict the manner in which they did the exercise, using any of the other variables to predict with**. More information about the data is available from http://groupware.les.inf.puc-rio.br/har (section on the Weight Lifting Exercise Dataset).
+
+Within these premises, this report describes the random forest model finally built, how cross validation was used, which choices were done for the cleaning of data, the exploration of data and the preprocessing, after a few trade-offs of the different alternatives, resulting in an out of sample error below 0,5%, confirming the suitability of the model designed. Finally, 1-time validation was done to predict the 20 different test cases provided, which resulted 100% accurate.
+
+#### Initialization
+Loading of library, suppressing results and messages:
+```{r initialization, results='hide', message=FALSE}
+setInternet2(use = TRUE)
+library(caret)
+library(randomForest)
+```
+
+#### Getting and cleaning the data 
+
+- Download data (original data files expected in default working directory):
+```{r download data}
+if (!file.exists("pml-training.csv")) {
+    URL<-"https://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv"
+    download.file(URL, destfile = "pml-training.csv")}
+if (!file.exists("pml-testing.csv")) {
+    URL<-"https://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv"
+    download.file(URL, destfile = "pml-testing.csv")}
+```
+
+- Read data:
+```{r load data, cache=TRUE}
+data <- read.csv("pml-training.csv",header=TRUE,sep=",")
+tstc <- read.csv("pml-testing.csv",header=TRUE,sep=",")
+```
+Total data frame has `r NROW(data)` rows (lifts recorded) and `r NCOL(data)` columns, i.e. `r NCOL(data)-1` predictors.
+
+#### Cleaning the data, Exploratory Data Analysis and Preprocessing
+
+- Cleaning the data: first columns seems not to correspond to sensor data, but to username, timestamps or window, so they were removed as they are not expected to add much value to the prediction model:
+```{r cleaning data, cache=TRUE}
+#summary(data)
+#str(data)
+sum(complete.cases(data))
+data <- data [,-c(1:7)]; tstc <- tstc [,-c(1:7)]
+```
+A lot of "zeroed" columns and "NAs" were detected, so such 59 "unique value" predictors were removed using nearZeroVar function (to remove zero covariates):
+```{r zero covariates, cache=TRUE}
+nearZero <- nearZeroVar(data[,-153])
+data <- data [,-nearZero]; tstc <- tstc [,-nearZero]
+```
+Moreover, those 41 columns with a majority of "NAs" (19,216 out of 19,622 records) were removed as well:
+```{r NA removal, cache=TRUE}
+na_count <- sapply(data,function(x) {sum(is.na(x))})
+table (na_count)
+colnotNA <- colSums(is.na(data)) == 0
+data <- data [,colnotNA]; tstc <- tstc [,colnotNA]
+dim(data);sum(complete.cases(data))
+```
+Number of predictors goes then down to `r NCOL(data)-1`, while the number of complete cases grows from 406 to all 19,622 lifts recorded.
+
+- More Exploratory Data Analysis: outcome variable is a factor variable quite evenly distributed among its 5 values. 
+```{r outcome}
+table(data$classe)
+```
+Predictors are a mix of integer, numeric and factor classes, which has to be taken into account in any preprocessing.The only factor remaining after the cleaning of data performed is the outcome variable.
+```{r predictors}
+table(sapply(data,class))
+```
+- Preprocessing: after the corresponding trade-offs, I decided to abort any regularization of the diverse numeric predictors, not so critical for the intended random forest model, or preprocessing using Principal Component Analysis, which did not add much value either in any of the trials performed.
+```{r preprocessing}
+preProc <- preProcess(data[,-53], method="pca", thresh=0.98)
+preProc
+```
+In comparison with the results above for 98% of the variance, for 95% of 25 components were needed by PCA, and for 99% 36 components.
+
+Same comments above apply to correlation analysis: a few predictors show a high correlation, but a more comprehensive analysis would be required, and only in case of severe needs to enhance performance, which did not apply.
+```{r correlation}
+M <- abs(cor(data[,-53]))
+diag(M) <-0
+M[which (M>0.9,arr.ind=TRUE)]
+unique(rownames(M[which (M>0.9,arr.ind=TRUE),]))
+```
+#### Split of data for Cross Validation
+
+80% of data was allocated to the training set and the other 20% for testing set to estimate model accuracy and out of sample model, while leaving the test cases provided for a 1-time validation of the prediction model design.Seed is set to enable reproducible research.
+```{r split data}
+set.seed(12)
+trainIndex = createDataPartition(data$classe, p=0.80, list=FALSE)
+training = data[trainIndex,]
+testing = data[-trainIndex,]
+dim (training); dim(testing)
+```
+
+#### Prediction Model
+
+Generalized linear model was discarded, as it can only be used for 2-class outcome, and here we have a 5-class outcome. Linear regression does not seem a priori too applicable either. After analyzing rpart method and its variability of results, *random forest was selected*, being a priori an efficient-enough solution for this classification problems where accuracy rules, and also reduces the need of strict regularization and preprocessing. Parameter ntree was finally set to 1024, instead of the default 512.
+```{r modelFit, cache=TRUE}
+set.seed(12)
+modelFit <- randomForest(classe ~ ., data = training, ntree = 1024)
+modelFit
+```
+**In sample error is of `r round(modelFit$err.rate[[1024,1]]*100,2)`%, i.e. an accuracy of `r 100-round(modelFit$err.rate[[1024,1]]*100,2)`% on the training data set, which seems acceptable**. Being below 100%, the risk of overfitting seems under control.
+
+#### Confusion matrix and Out of Sample Error
+
+Applying the prediction function created to the testing data set, as splitted above, the following confusion matrix is obtained:
+```{r confusionMatrix}
+confMat <- confusionMatrix(testing$classe,predict(modelFit,testing))
+confMat
+```
+An accuracy of `r round(confMat$overall[[1]]*100,2)`% is obtained, which can be considered as an outstanding (and unexpected) result. **Out of Sample Error is therefore of `r 100-round(confMat$overall[[1]]*100,2)`%**.These results validate the prediction model and the hypothesis and decisions performed, so no further refinements seem to be required, like traincontrol, bagging, or boosting.
+
+The 10 more important predictors are ranked below:
+```{r importance}
+importance <- varImp(modelFit)
+importance$Variable <- row.names(importance)
+head(importance[order(importance$Overall, decreasing = T), ],10)
+```
+
+#### Validation
+
+Finally, the prediction model is applied to the validation data set, as provided by the course staff, which resulted in a 100% accuracy.
+```{r prediction, results='hide'}
+predict(modelFit, tstc)
+```
